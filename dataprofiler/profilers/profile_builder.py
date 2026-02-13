@@ -1432,7 +1432,7 @@ class UnstructuredProfiler(BaseProfiler):
         cls,
         data,
         config: dict | None = None,
-    ):
+    ) -> UnstructuredProfiler:
         """
         Parse attribute from json dictionary into self.
 
@@ -1441,9 +1441,21 @@ class UnstructuredProfiler(BaseProfiler):
         :param config: config for loading profiler params from dictionary
         :type config: Dict | None
 
-        :raises: NotImplementedError
+        :return: Profiler with attributes populated.
+        :rtype: UnstructuredProfiler
         """
-        raise NotImplementedError("UnstructuredProfiler deserialization not supported.")
+        options = load_option(data["options"], config)
+        profiler = cls(None, options=options)
+
+        for attr, value in data.items():
+            if "times" == attr:
+                value = defaultdict(float, value)
+            if "_profile" == attr and value is not None:
+                value = load_compiler(value, config)
+            if "options" == attr:
+                continue
+            setattr(profiler, attr, value)
+        return profiler
 
     @profiler_utils.method_timeit(name="clean_and_base_stats")
     def _clean_data_and_get_base_stats(

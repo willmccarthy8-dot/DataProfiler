@@ -3607,34 +3607,125 @@ class TestUnstructuredProfiler(unittest.TestCase):
         profile = dp.UnstructuredProfiler(empty_df, min_true_samples=10)
         self.assertEqual(10, profile._min_true_samples)
 
-    def test_encode(self, *mocks):
+    def test_encode(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
         profiler = UnstructuredProfiler(None)
-        with self.assertRaisesRegex(
-            NotImplementedError, "UnstructuredProfiler serialization not supported."
-        ):
-            json.dumps(profiler, cls=ProfileEncoder)
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        serialized_dict = json.loads(serialized)
+        self.assertEqual("UnstructuredProfiler", serialized_dict["class"])
+        self.assertIn("data", serialized_dict)
+        self.assertIn("options", serialized_dict["data"])
+        self.assertIsNone(serialized_dict["data"]["encoding"])
+        self.assertIsNone(serialized_dict["data"]["file_type"])
+        self.assertEqual(0, serialized_dict["data"]["total_samples"])
 
-    def test_decode(self, *mocks):
-        with self.assertRaisesRegex(
-            ValueError, "Invalid profiler class UnstructuredProfiler failed to load."
-        ):
-            load_profiler({"class": "UnstructuredProfiler", "data": {}})
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_decode(self, mock_utils_DataLabeler, mock_DataLabeler, *mocks):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+        profiler = UnstructuredProfiler(None)
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+        test_utils.assert_profiles_equal(deserialized, profiler)
 
-    def test_load_from_dict(self, *mocks):
-        with self.assertRaisesRegex(
-            NotImplementedError, "UnstructuredProfiler deserialization not supported."
-        ):
-            UnstructuredProfiler.load_from_dict({}, None)
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_load_from_dict(self, mock_utils_DataLabeler, mock_DataLabeler, *mocks):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+        profiler = UnstructuredProfiler(None)
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        serialized_dict = json.loads(serialized)
+        loaded = UnstructuredProfiler.load_from_dict(serialized_dict["data"])
+        test_utils.assert_profiles_equal(loaded, profiler)
 
-    @mock.patch("builtins.open")
-    def test_save_json_file(self, *mocks):
-        data = pd.Series(["this", "is my", "\n\r", "test"])
-        save_profile = UnstructuredProfiler(data)
+    def test_save_json_file(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+        profiler = UnstructuredProfiler(None)
 
+        with mock.patch("builtins.open") as mock_open:
+            mock_file = setup_save_mock_string_open(mock_open)
+            profiler.save("output/mock.json", save_method="json")
+            mock_file.seek(0)
+
+        actual_data = json.loads(mock_file.read())
+        self.assertEqual("UnstructuredProfiler", actual_data["class"])
+        self.assertIn("data", actual_data)
+        self.assertEqual(0, actual_data["data"]["total_samples"])
+        mock_open.assert_called_with("output/mock.json", "w")
+
+    def test_encode_with_options(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+        profiler = UnstructuredProfiler(
+            None, samples_per_update=100, min_true_samples=25
+        )
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        serialized_dict = json.loads(serialized)
+        self.assertEqual(100, serialized_dict["data"]["_samples_per_update"])
+        self.assertEqual(25, serialized_dict["data"]["_min_true_samples"])
+
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_round_trip_with_options(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+        profiler = UnstructuredProfiler(
+            None, samples_per_update=50, min_true_samples=10
+        )
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+        self.assertEqual(profiler._samples_per_update, deserialized._samples_per_update)
+        self.assertEqual(profiler._min_true_samples, deserialized._min_true_samples)
+        self.assertEqual(profiler.total_samples, deserialized.total_samples)
+        test_utils.assert_profiles_equal(deserialized, profiler)
+
+    def test_encode_preserves_all_fields(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+        profiler = UnstructuredProfiler(None)
+        serialized = json.dumps(profiler, cls=ProfileEncoder)
+        serialized_dict = json.loads(serialized)
+        data = serialized_dict["data"]
+        self.assertIn("total_samples", data)
+        self.assertIn("sample", data)
+        self.assertIn("encoding", data)
+        self.assertIn("file_type", data)
+        self.assertIn("_samples_per_update", data)
+        self.assertIn("_min_true_samples", data)
+        self.assertIn("_empty_line_count", data)
+        self.assertIn("memory_size", data)
+        self.assertIn("options", data)
+        self.assertIn("times", data)
+
+    def test_decode_invalid_class(self, *mocks):
         with self.assertRaisesRegex(
-            NotImplementedError, "UnstructuredProfiler serialization not supported."
+            ValueError, "Invalid profiler class .* failed to load."
         ):
-            save_profile.save(save_method="json")
+            load_profiler({"class": "InvalidProfiler", "data": {}})
 
     def test_save_value_error(self, *mocks):
         data = pd.Series(["this", "is my", "\n\r", "test"])

@@ -61,6 +61,32 @@ class UnstructuredLabelerProfile:
         self.separators = (" ", ",", ";", '"', ":", "\n", "\t", ".", "!", "'")
         self.times: dict = defaultdict(float)
 
+    @classmethod
+    def load_from_dict(cls, data, config=None):
+        """
+        Parse attribute from json dictionary into self.
+
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: UnstructuredLabelerProfile
+        """
+        profile = cls()
+        for attr, value in data.items():
+            if "times" == attr:
+                value = defaultdict(float, value)
+            if "entity_counts" == attr:
+                for level in value:
+                    value[level] = defaultdict(int, value[level])
+            if "entity_percentages" == attr:
+                for level in value:
+                    value[level] = defaultdict(int, value[level])
+            setattr(profile, attr, value)
+        return profile
+
     def __add__(self, other: UnstructuredLabelerProfile) -> UnstructuredLabelerProfile:
         """
         Merge the properties of two UnstructuredLabelerProfile.
