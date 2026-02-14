@@ -2616,6 +2616,452 @@ class TestStructuredProfiler(unittest.TestCase):
 
         test_utils.assert_profiles_equal(deserialized, expected_profile)
 
+    def test_pickle_roundtrip_with_actual_data(self):
+        data = pd.DataFrame(
+            {
+                "ints": [1, 2, 3, 4, 5],
+                "floats": [1.1, 2.2, 3.3, 4.4, 5.5],
+                "strs": ["a", "b", "c", "d", "e"],
+            }
+        )
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        save_report = test_utils.clean_report(save_profile.report())
+        load_report = test_utils.clean_report(load_profile.report())
+        np.testing.assert_equal(save_report, load_report)
+
+    def test_pickle_roundtrip_preserves_options(self):
+        data = pd.DataFrame({"a": [10, 20, 30], "b": [1.5, 2.5, 3.5]})
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+                "structured_options.int.is_enabled": True,
+                "structured_options.float.is_enabled": True,
+                "structured_options.text.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        self.assertFalse(load_profile.options.text.is_enabled)
+        self.assertTrue(load_profile.options.int.is_enabled)
+        self.assertTrue(load_profile.options.float.is_enabled)
+
+    def test_pickle_roundtrip_update_after_load(self):
+        data = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        new_data = pd.DataFrame({"a": [7, 8, 9], "b": [10.0, 11.0, 12.0]})
+        save_profile.update_profile(new_data)
+        load_profile.update_profile(new_data)
+
+        self.assertEqual(save_profile.total_samples, load_profile.total_samples)
+        self.assertEqual(
+            len(save_profile.profile), len(load_profile.profile)
+        )
+        for save_col, load_col in zip(
+            save_profile.profile, load_profile.profile
+        ):
+            self.assertEqual(save_col.sample_size, load_col.sample_size)
+            self.assertEqual(save_col.null_count, load_col.null_count)
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_data_labeler_extraction_and_restoration_pkl(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "structured_model"
+        mock_labeler.return_value = mock_labeler
+        mock_labeler.model.num_labels = 2
+        mock_labeler.reverse_label_mapping = {1: "a", 2: "b"}
+        mock_labeler.predict.side_effect = lambda *args, **kwargs: {
+            "pred": [],
+            "conf": [[1, 1], [0, 0]],
+        }
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        data = pd.DataFrame({"a": [1, 2, 3]})
+        profile_options = dp.ProfilerOptions()
+        profile_options.set({"multiprocess.is_enabled": False})
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        self.assertIsNotNone(
+            save_profile.options.data_labeler.data_labeler_object
+        )
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        self.assertIsNotNone(
+            load_profile.options.data_labeler.data_labeler_object
+        )
+        first_col_loaded = load_profile.profile[0]
+        self.assertIsNotNone(
+            first_col_loaded.profiles["data_label_profile"]
+            ._profiles["data_labeler"]
+            .data_labeler
+        )
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_data_labeler_extraction_and_restoration_json(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "structured_model"
+        mock_labeler.return_value = mock_labeler
+        mock_labeler.model.num_labels = 2
+        mock_labeler.reverse_label_mapping = {1: "a", 2: "b"}
+        mock_labeler.predict.side_effect = lambda *args, **kwargs: {
+            "pred": [],
+            "conf": [[1, 1], [0, 0]],
+        }
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        data = pd.DataFrame({"a": [1, 2, 3]})
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "multiprocess.is_enabled": False,
+                "null_replication_metrics.is_enabled": True,
+            }
+        )
+
+        with test_utils.mock_timeit():
+            save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        self.assertIsNotNone(
+            save_profile.options.data_labeler.data_labeler_object
+        )
+
+        serialized = json.dumps(save_profile, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, save_profile)
+
+        self.assertIsNotNone(
+            deserialized.options.data_labeler.data_labeler_object
+        )
+        first_col_loaded = deserialized.profile[0]
+        self.assertIsNotNone(
+            first_col_loaded.profiles["data_label_profile"]
+            ._profiles["data_labeler"]
+            .data_labeler
+        )
+
+    def test_complex_roundtrip_many_columns(self):
+        np.random.seed(42)
+        num_cols = 12
+        num_rows = 200
+        col_data = {}
+        for i in range(num_cols):
+            if i % 3 == 0:
+                col_data[f"int_col_{i}"] = np.random.randint(0, 1000, num_rows).tolist()
+            elif i % 3 == 1:
+                col_data[f"float_col_{i}"] = np.random.uniform(
+                    -100.0, 100.0, num_rows
+                ).tolist()
+            else:
+                col_data[f"str_col_{i}"] = [
+                    random.choice(["alpha", "beta", "gamma", "delta"])
+                    for _ in range(num_rows)
+                ]
+        data = pd.DataFrame(col_data)
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        self.assertEqual(len(save_profile.profile), num_cols)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        self.assertEqual(len(load_profile.profile), num_cols)
+
+        save_report = test_utils.clean_report(save_profile.report())
+        load_report = test_utils.clean_report(load_profile.report())
+        np.testing.assert_equal(save_report, load_report)
+
+    def test_complex_roundtrip_large_histogram(self):
+        np.random.seed(0)
+        data = pd.DataFrame(
+            {
+                "values": np.random.normal(loc=50, scale=15, size=500).tolist(),
+            }
+        )
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        save_report = save_profile.report()
+        save_hist = save_report["data_stats"][0]["statistics"]["histogram"]
+        self.assertIn("bin_counts", save_hist)
+        self.assertIn("bin_edges", save_hist)
+        self.assertGreater(len(save_hist["bin_counts"]), 0)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        load_report = load_profile.report()
+        load_hist = load_report["data_stats"][0]["statistics"]["histogram"]
+
+        np.testing.assert_array_almost_equal(
+            save_hist["bin_counts"], load_hist["bin_counts"]
+        )
+        np.testing.assert_array_almost_equal(
+            save_hist["bin_edges"], load_hist["bin_edges"]
+        )
+
+        save_stats = save_report["data_stats"][0]["statistics"]
+        load_stats = load_report["data_stats"][0]["statistics"]
+        for key in ["mean", "variance", "skewness", "kurtosis", "min", "max"]:
+            if key in save_stats and save_stats[key] is not None:
+                np.testing.assert_almost_equal(
+                    save_stats[key], load_stats[key], decimal=10
+                )
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_complex_json_roundtrip_many_columns(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "structured_model"
+        mock_labeler.return_value = mock_labeler
+        mock_labeler.model.num_labels = 2
+        mock_labeler.reverse_label_mapping = {1: "a", 2: "b"}
+        mock_labeler.predict.side_effect = lambda *args, **kwargs: {
+            "pred": [],
+            "conf": [[1, 1], [0, 0]],
+        }
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        np.random.seed(42)
+        num_cols = 10
+        num_rows = 50
+        col_data = {}
+        for i in range(num_cols):
+            if i % 2 == 0:
+                col_data[f"col_{i}"] = np.random.randint(0, 100, num_rows).tolist()
+            else:
+                col_data[f"col_{i}"] = np.random.uniform(0, 100, num_rows).tolist()
+        data = pd.DataFrame(col_data)
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "correlation.is_enabled": True,
+                "null_replication_metrics.is_enabled": True,
+                "multiprocess.is_enabled": False,
+            }
+        )
+
+        with test_utils.mock_timeit():
+            expected_profile = StructuredProfiler(data, options=profile_options)
+
+        serialized = json.dumps(expected_profile, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, expected_profile)
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_roundtrip_with_large_histogram(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "structured_model"
+        mock_labeler.return_value = mock_labeler
+        mock_labeler.model.num_labels = 2
+        mock_labeler.reverse_label_mapping = {1: "a", 2: "b"}
+        mock_labeler.predict.side_effect = lambda *args, **kwargs: {
+            "pred": [],
+            "conf": [[1, 1], [0, 0]],
+        }
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        np.random.seed(0)
+        data = pd.DataFrame(
+            {
+                "values": np.random.normal(loc=50, scale=15, size=500).tolist(),
+            }
+        )
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "correlation.is_enabled": True,
+                "null_replication_metrics.is_enabled": True,
+                "multiprocess.is_enabled": False,
+            }
+        )
+
+        with test_utils.mock_timeit():
+            expected_profile = StructuredProfiler(data, options=profile_options)
+
+        serialized = json.dumps(expected_profile, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, expected_profile)
+
+    def test_complex_roundtrip_with_nulls_and_mixed_types(self):
+        data = pd.DataFrame(
+            {
+                "int_col": [1, None, 3, None, 5, 6, 7, 8, None, 10],
+                "float_col": [1.1, 2.2, None, 4.4, None, 6.6, 7.7, 8.8, 9.9, None],
+                "str_col": ["a", "b", None, "d", "e", None, "g", "h", "i", "j"],
+            }
+        )
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        save_report = test_utils.clean_report(save_profile.report())
+        load_report = test_utils.clean_report(load_profile.report())
+        np.testing.assert_equal(save_report, load_report)
+
+        self.assertEqual(
+            save_profile.row_has_null_count, load_profile.row_has_null_count
+        )
+        self.assertEqual(
+            save_profile.row_is_null_count, load_profile.row_is_null_count
+        )
+        self.assertEqual(save_profile.total_samples, load_profile.total_samples)
+
+    def test_pickle_roundtrip_with_real_csv_file(self):
+        datapth = "dataprofiler/tests/data/"
+        data = dp.Data(os.path.join(datapth, "csv/iris.csv"))
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "data_labeler.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        save_report = test_utils.clean_report(save_profile.report())
+        load_report = test_utils.clean_report(load_profile.report())
+        np.testing.assert_equal(save_report, load_report)
+
+        self.assertEqual(len(save_profile.profile), len(load_profile.profile))
+        self.assertGreater(len(save_profile.profile), 1)
+
 
 class TestStructuredColProfilerClass(unittest.TestCase):
     def setUp(self):
