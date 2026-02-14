@@ -1762,6 +1762,78 @@ class TestStructuredProfiler(unittest.TestCase):
             save_profile.save(save_method="csv")
 
     @mock.patch(
+        "dataprofiler.profilers.data_labeler_column_profile.DataLabelerColumn.update"
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_save_value_error_various_inputs(self, *mocks):
+        mock_labeler = mocks[0].return_value
+        mock_labeler._default_model_loc = "structured_model"
+        mocks[0].load_from_library.return_value = mock_labeler
+
+        df_structured = pd.DataFrame(
+            [
+                [-1.5, 3.0, "nan"],
+                ["a", "z"],
+            ]
+        ).T
+
+        profile_options = dp.ProfilerOptions()
+        profile_options.set(
+            {
+                "correlation.is_enabled": True,
+                "null_replication_metrics.is_enabled": True,
+                "multiprocess.is_enabled": False,
+            }
+        )
+        save_profile = dp.StructuredProfiler(df_structured, options=profile_options)
+
+        for invalid_method in ["", "xml", "CSV", "YAML"]:
+            with self.assertRaisesRegex(
+                ValueError, 'save_method must be "json" or "pickle".'
+            ):
+                save_profile.save(save_method=invalid_method)
+
+        for non_string_method in [123, None, 3.14]:
+            with self.assertRaises(AttributeError):
+                save_profile.save(save_method=non_string_method)
+
+    def test_save_and_load_empty_profile_pkl(self):
+        profile_options = dp.ProfilerOptions()
+        profile_options.set({"data_labeler.is_enabled": False})
+        save_profile = dp.StructuredProfiler(pd.DataFrame([]), options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch("dataprofiler.profilers.profile_builder.DataLabeler"):
+                load_profile = dp.StructuredProfiler.load("mock.pkl", "pickle")
+
+        save_report = test_utils.clean_report(save_profile.report())
+        load_report = test_utils.clean_report(load_profile.report())
+        self.assertDictEqual(save_report, load_report)
+
+    def test_save_and_load_empty_profile_json(self):
+        profile_options = dp.ProfilerOptions()
+        profile_options.set({"data_labeler.is_enabled": False})
+        save_profile = dp.StructuredProfiler(pd.DataFrame([]), options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_string_open(m)
+            save_profile.save(save_method="json")
+            mock_file.seek(0)
+            with mock.patch(
+                "dataprofiler.profilers.profiler_utils."
+                "DataLabeler.load_from_library",
+            ):
+                load_profile = dp.StructuredProfiler.load("mock.json", "json")
+
+        test_utils.assert_profiles_equal(save_profile, load_profile)
+
+    @mock.patch(
         "dataprofiler.profilers.profile_builder." "ColumnPrimitiveTypeProfileCompiler"
     )
     @mock.patch("dataprofiler.profilers.profile_builder." "ColumnStatsProfileCompiler")
@@ -3737,6 +3809,82 @@ class TestUnstructuredProfiler(unittest.TestCase):
         ):
             save_profile.save(save_method="csv")
 
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_save_and_load_json_round_trip(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        save_profile = UnstructuredProfiler(None)
+        save_profile._empty_line_count = 5
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_string_open(m)
+            save_profile.save(save_method="json")
+            mock_file.seek(0)
+            load_profile = UnstructuredProfiler.load("mock.json", "json")
+
+        self.assertEqual(5, load_profile._empty_line_count)
+        test_utils.assert_profiles_equal(save_profile, load_profile)
+
+    def test_save_and_load_pkl_round_trip(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+
+        profile_options = UnstructuredOptions()
+        profile_options.set({"data_labeler.is_enabled": False})
+        save_profile = UnstructuredProfiler(None, options=profile_options)
+        save_profile._empty_line_count = 5
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_bytes_open(m)
+            save_profile.save()
+            mock_file.seek(0)
+            with mock.patch(
+                "dataprofiler.profilers.profile_builder.DataLabeler",
+            ):
+                load_profile = UnstructuredProfiler.load("mock.pkl", "pickle")
+
+        self.assertEqual(5, load_profile._empty_line_count)
+        self.assertEqual(
+            save_profile.total_samples, load_profile.total_samples
+        )
+        self.assertEqual(save_profile.encoding, load_profile.encoding)
+        self.assertEqual(save_profile.file_type, load_profile.file_type)
+        self.assertEqual(
+            save_profile._samples_per_update, load_profile._samples_per_update
+        )
+        self.assertEqual(
+            save_profile._min_true_samples, load_profile._min_true_samples
+        )
+        self.assertEqual(save_profile.memory_size, load_profile.memory_size)
+        self.assertEqual(save_profile.sample, load_profile.sample)
+
+    def test_save_value_error_various_inputs(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+
+        data = pd.Series(["this", "is my", "\n\r", "test"])
+        save_profile = UnstructuredProfiler(data)
+
+        for invalid_method in ["", "xml", "CSV", "YAML"]:
+            with self.assertRaisesRegex(
+                ValueError, 'save_method must be "json" or "pickle".'
+            ):
+                save_profile.save(save_method=invalid_method)
+
+        for non_string_method in [123, None, 3.14]:
+            with self.assertRaises(AttributeError):
+                save_profile.save(save_method=non_string_method)
+
 
 class TestUnstructuredProfilerWData(unittest.TestCase):
     @classmethod
@@ -5227,6 +5375,50 @@ class TestProfilerFactoryClass(unittest.TestCase):
             # validate both are still usable after
             save_profile.update_profile(pd.DataFrame(["test", "test2"]))
             load_profile.update_profile(pd.DataFrame(["test", "test2"]))
+
+    def test_save_and_load_structured_json(self):
+        data = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
+        profile_options = ProfilerOptions()
+        profile_options.set({"data_labeler.is_enabled": False})
+        save_profile = dp.StructuredProfiler(data, options=profile_options)
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_string_open(m)
+            save_profile.save(save_method="json")
+            mock_file.seek(0)
+            with mock.patch(
+                "dataprofiler.profilers.profiler_utils."
+                "DataLabeler.load_from_library",
+            ):
+                load_profile = Profiler.load("mock.json", load_method="json")
+
+        test_utils.assert_profiles_equal(save_profile, load_profile)
+
+    def test_save_and_load_unstructured_json(self):
+        profile_options = ProfilerOptions()
+        profile_options.set({"data_labeler.is_enabled": False})
+        save_profile = UnstructuredProfiler(None, options=profile_options)
+        save_profile._empty_line_count = 3
+
+        with mock.patch("builtins.open") as m:
+            mock_file = setup_save_mock_string_open(m)
+            save_profile.save(save_method="json")
+            mock_file.seek(0)
+            with mock.patch(
+                "dataprofiler.profilers.profiler_utils."
+                "DataLabeler.load_from_library",
+            ):
+                load_profile = Profiler.load("mock.json", load_method="json")
+
+        self.assertEqual(3, load_profile._empty_line_count)
+        test_utils.assert_profiles_equal(save_profile, load_profile)
+
+    def test_load_invalid_method(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Please specify a valid load_method \('pickle','json' or None\)",
+        ):
+            Profiler.load("mock.pkl", load_method="xml")
 
     @mock.patch(
         "dataprofiler.profilers.profile_builder.StructuredProfiler."
