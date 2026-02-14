@@ -2616,6 +2616,147 @@ class TestStructuredProfiler(unittest.TestCase):
 
         test_utils.assert_profiles_equal(deserialized, expected_profile)
 
+    def test_json_decode_missing_class_key(self):
+        serialized = {"data": {"options": {}, "_profile": []}}
+        with self.assertRaises(KeyError):
+            load_profiler(serialized)
+
+    def test_json_decode_invalid_class_name(self):
+        serialized = {
+            "class": "NonExistentProfiler",
+            "data": {"options": {}, "_profile": []},
+        }
+        with self.assertRaisesRegex(ValueError, "Invalid profiler class"):
+            load_profiler(serialized)
+
+    def test_json_decode_missing_data_key(self):
+        serialized = {"class": "StructuredProfiler"}
+        with self.assertRaises(KeyError):
+            load_profiler(serialized)
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_decode_with_extra_fields(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        fake_profile_name = None
+        profile_options = dp.ProfilerOptions()
+        profile_options.set({"multiprocess.is_enabled": False})
+        expected_profile = StructuredProfiler(
+            fake_profile_name, options=profile_options
+        )
+
+        serialized = json.dumps(expected_profile, cls=ProfileEncoder)
+        deserialized_dict = json.loads(serialized)
+        deserialized_dict["data"]["_new_future_attribute"] = "future_value"
+        deserialized_dict["data"]["_another_new_field"] = [1, 2, 3]
+
+        deserialized = load_profiler(deserialized_dict)
+        self.assertEqual(deserialized._new_future_attribute, "future_value")
+        self.assertEqual(deserialized._another_new_field, [1, 2, 3])
+
+    @mock.patch(
+        "dataprofiler.profilers.data_labeler_column_profile.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_encode_with_none_values(self, mock_DataLabeler, *mocks):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+
+        fake_profile_name = None
+        with test_utils.mock_timeit():
+            profile = StructuredProfiler(fake_profile_name)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized_dict = json.loads(serialized)
+
+        self.assertIsNone(deserialized_dict["data"]["encoding"])
+        self.assertIsNone(deserialized_dict["data"]["file_type"])
+        self.assertIsNone(deserialized_dict["data"]["_samples_per_update"])
+        self.assertIsNone(deserialized_dict["data"]["correlation_matrix"])
+        self.assertIsNone(deserialized_dict["data"]["chi2_matrix"])
+
+    def test_json_encode_unstructured_raises(self):
+        with self.assertRaises(NotImplementedError):
+            json.dumps(
+                mock.MagicMock(spec=UnstructuredProfiler), cls=ProfileEncoder
+            )
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_decode_empty_profile_list(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_labeler.return_value = mock_labeler
+        mock_DataLabeler.load_from_library = mock_labeler
+        mock_utils_DataLabeler.load_from_library = mock_labeler
+        mock_DataLabeler.return_value = mock_labeler
+
+        fake_profile_name = None
+        profile_options = dp.ProfilerOptions()
+        profile_options.set({"multiprocess.is_enabled": False})
+        profile = StructuredProfiler(fake_profile_name, options=profile_options)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized = load_profiler(json.loads(serialized))
+
+        self.assertEqual(deserialized._profile, [])
+        self.assertEqual(deserialized.total_samples, 0)
+
+    @mock.patch(
+        "dataprofiler.profilers.data_labeler_column_profile.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_json_encode_produces_valid_structure(
+        self, mock_DataLabeler, *mocks
+    ):
+        mock_DataLabeler._default_model_loc = "test"
+        mock_DataLabeler.return_value = mock_DataLabeler
+
+        fake_profile_name = None
+        with test_utils.mock_timeit():
+            profile = StructuredProfiler(fake_profile_name)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        parsed = json.loads(serialized)
+
+        self.assertIn("class", parsed)
+        self.assertIn("data", parsed)
+        self.assertEqual(parsed["class"], "StructuredProfiler")
+        self.assertIn("_profile", parsed["data"])
+        self.assertIn("options", parsed["data"])
+        self.assertIn("total_samples", parsed["data"])
+        self.assertIn("encoding", parsed["data"])
+
 
 class TestStructuredColProfilerClass(unittest.TestCase):
     def setUp(self):
@@ -3305,6 +3446,124 @@ class TestStructuredColProfilerClass(unittest.TestCase):
         assert deserialized.profile["data_label"] == "a"
         assert deserialized.profile["statistics"]["max"] == 15
         assert deserialized.profile["statistics"]["min"] == -1.5
+
+    def test_col_json_decode_missing_class_key(self):
+        serialized = {"data": {"name": None, "profiles": {}}}
+        with self.assertRaises(KeyError):
+            load_structured_col_profiler(serialized)
+
+    def test_col_json_decode_invalid_class_name(self):
+        serialized = {
+            "class": "NonExistentColProfiler",
+            "data": {"name": None, "profiles": {}},
+        }
+        with self.assertRaisesRegex(
+            ValueError, "Invalid structured col profiler class"
+        ):
+            load_structured_col_profiler(serialized)
+
+    def test_col_json_decode_with_extra_fields(self):
+        profile = StructuredColProfiler(None)
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized_dict = json.loads(serialized)
+        deserialized_dict["data"]["_future_field"] = "new_value"
+        deserialized_dict["data"]["_version"] = 99
+
+        result = load_structured_col_profiler(deserialized_dict)
+        self.assertEqual(result._future_field, "new_value")
+        self.assertEqual(result._version, 99)
+        self.assertIsNone(result.name)
+
+    def test_col_json_decode_with_missing_optional_fields(self):
+        serialized = {
+            "class": "StructuredColProfiler",
+            "data": {"profiles": {}},
+        }
+        result = load_structured_col_profiler(serialized)
+        self.assertIsInstance(result, StructuredColProfiler)
+
+    def test_col_json_encode_decode_empty_roundtrip(self):
+        profile = StructuredColProfiler(None)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized = load_structured_col_profiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, profile)
+        self.assertIsNone(deserialized.name)
+        self.assertEqual(deserialized.sample_size, 0)
+        self.assertEqual(deserialized.null_count, 0)
+        self.assertEqual(deserialized.profiles, {})
+
+    def test_col_json_encode_decode_preserves_null_types_index(self):
+        profile = StructuredColProfiler(None)
+        profile.null_types_index = {"None": {1, 5}, "NaN": {3}}
+        profile.null_count = 3
+        profile.null_types = ["None", "NaN"]
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized = load_structured_col_profiler(json.loads(serialized))
+
+        self.assertEqual(deserialized.null_types_index, {"None": {1, 5}, "NaN": {3}})
+        self.assertEqual(deserialized.null_count, 3)
+
+    def test_col_json_encode_produces_valid_structure(self):
+        profile = StructuredColProfiler(None)
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        parsed = json.loads(serialized)
+
+        self.assertIn("class", parsed)
+        self.assertIn("data", parsed)
+        self.assertEqual(parsed["class"], "StructuredColProfiler")
+        self.assertIn("profiles", parsed["data"])
+        self.assertIn("name", parsed["data"])
+        self.assertIn("sample_size", parsed["data"])
+        self.assertIn("null_count", parsed["data"])
+
+    def test_col_json_decode_invalid_compiler_in_profiles(self):
+        serialized = {
+            "class": "StructuredColProfiler",
+            "data": {
+                "name": "test",
+                "profiles": {
+                    "data_type_profile": {
+                        "class": "InvalidCompiler",
+                        "data": {},
+                    }
+                },
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "Invalid compiler class"):
+            load_structured_col_profiler(serialized)
+
+    @mock.patch(
+        "dataprofiler.profilers.data_labeler_column_profile.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profiler_utils.DataLabeler",
+        spec=BaseDataLabeler,
+    )
+    def test_col_json_decode_with_nested_compilers(
+        self, mock_utils_DataLabeler, mock_DataLabeler, *mocks
+    ):
+        mock_labeler = mock.Mock(spec=BaseDataLabeler)
+        mock_labeler._default_model_loc = "test"
+        mock_DataLabeler.load_from_library = mock_labeler
+
+        profile = StructuredColProfiler(None)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized = load_structured_col_profiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, profile)
+
+    def test_col_json_encode_decode_preserves_null_values(self):
+        profile = StructuredColProfiler(None)
+
+        serialized = json.dumps(profile, cls=ProfileEncoder)
+        deserialized = load_structured_col_profiler(json.loads(serialized))
+
+        self.assertEqual(deserialized._null_values, profile._null_values)
 
 
 @mock.patch(

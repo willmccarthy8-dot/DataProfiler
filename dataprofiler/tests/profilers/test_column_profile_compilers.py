@@ -1139,5 +1139,151 @@ class TestUnstructuredCompiler(unittest.TestCase):
         self.assertDictEqual(expected_diff, compiler1.diff(compiler2))
 
 
+class TestJsonSerializationEdgeCases(unittest.TestCase):
+
+    def test_decode_compiler_missing_class_key(self):
+        serialized = {"data": {"name": None, "_profiles": {}}}
+        with self.assertRaises(KeyError):
+            load_compiler(serialized)
+
+    def test_decode_compiler_invalid_class_name(self):
+        serialized = {
+            "class": "NonExistentCompiler",
+            "data": {"name": None, "_profiles": {}},
+        }
+        with self.assertRaisesRegex(ValueError, "Invalid compiler class"):
+            load_compiler(serialized)
+
+    def test_decode_compiler_missing_data_key(self):
+        serialized = {"class": "ColumnStatsProfileCompiler"}
+        with self.assertRaises(KeyError):
+            load_compiler(serialized)
+
+    def test_decode_compiler_with_extra_fields(self):
+        compiler = col_pro_compilers.ColumnStatsProfileCompiler()
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        deserialized_dict = json.loads(serialized)
+        deserialized_dict["data"]["_extra_future_field"] = "some_value"
+        deserialized_dict["data"]["_another_new_field"] = 42
+
+        result = load_compiler(deserialized_dict)
+        self.assertEqual(result._extra_future_field, "some_value")
+        self.assertEqual(result._another_new_field, 42)
+        self.assertIsNone(result.name)
+
+    def test_decode_compiler_with_missing_optional_fields(self):
+        serialized = {
+            "class": "ColumnStatsProfileCompiler",
+            "data": {"_profiles": {}},
+        }
+        result = load_compiler(serialized)
+        self.assertIsInstance(
+            result, col_pro_compilers.ColumnStatsProfileCompiler
+        )
+        self.assertEqual(result._profiles, {})
+
+    def test_encode_decode_empty_stats_compiler_roundtrip(self):
+        compiler = col_pro_compilers.ColumnStatsProfileCompiler()
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        deserialized = load_compiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(compiler, deserialized)
+        self.assertIsNone(deserialized.name)
+        self.assertEqual(deserialized._profiles, {})
+
+    def test_encode_decode_empty_primitive_compiler_roundtrip(self):
+        compiler = col_pro_compilers.ColumnPrimitiveTypeProfileCompiler()
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        deserialized = load_compiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(compiler, deserialized)
+        self.assertIsNone(deserialized.name)
+        self.assertEqual(deserialized._profiles, {})
+
+    def test_encode_decode_stats_compiler_after_update_roundtrip(self):
+        data = pd.Series(["10", "20", "30", "40", "50"], name="numbers")
+        with test_utils.mock_timeit():
+            compiler = col_pro_compilers.ColumnStatsProfileCompiler(data)
+
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        deserialized = load_compiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, compiler)
+        self.assertEqual(deserialized.name, "numbers")
+        self.assertIn("order", deserialized._profiles)
+        self.assertIn("category", deserialized._profiles)
+
+    def test_encode_decode_primitive_compiler_after_update_roundtrip(self):
+        data = pd.Series(["1.5", "2.5", "3.5"], name="floats")
+        with test_utils.mock_timeit():
+            compiler = col_pro_compilers.ColumnPrimitiveTypeProfileCompiler(
+                data
+            )
+
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        deserialized = load_compiler(json.loads(serialized))
+
+        test_utils.assert_profiles_equal(deserialized, compiler)
+        self.assertEqual(deserialized.name, "floats")
+
+    def test_decode_compiler_with_empty_profiles_dict(self):
+        serialized = {
+            "class": "ColumnPrimitiveTypeProfileCompiler",
+            "data": {"name": "test_col", "_profiles": {}},
+        }
+        result = load_compiler(serialized)
+        self.assertIsInstance(
+            result, col_pro_compilers.ColumnPrimitiveTypeProfileCompiler
+        )
+        self.assertEqual(result.name, "test_col")
+        self.assertEqual(result._profiles, {})
+
+    def test_decode_compiler_invalid_profile_class_in_profiles(self):
+        serialized = {
+            "class": "ColumnStatsProfileCompiler",
+            "data": {
+                "name": "test",
+                "_profiles": {
+                    "order": {
+                        "class": "InvalidColumnType",
+                        "data": {},
+                    }
+                },
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "Invalid profiler class"):
+            load_compiler(serialized)
+
+    def test_json_encode_produces_valid_json_string(self):
+        data = pd.Series(["a", "b", "c", "a", "b"], name="categories")
+        with test_utils.mock_timeit():
+            compiler = col_pro_compilers.ColumnStatsProfileCompiler(data)
+
+        serialized = json.dumps(compiler, cls=ProfileEncoder)
+        parsed = json.loads(serialized)
+
+        self.assertIn("class", parsed)
+        self.assertIn("data", parsed)
+        self.assertEqual(parsed["class"], "ColumnStatsProfileCompiler")
+        self.assertIn("_profiles", parsed["data"])
+        self.assertIn("name", parsed["data"])
+
+    def test_decode_all_compiler_types_empty(self):
+        compiler_classes = [
+            ("ColumnPrimitiveTypeProfileCompiler",
+             col_pro_compilers.ColumnPrimitiveTypeProfileCompiler),
+            ("ColumnStatsProfileCompiler",
+             col_pro_compilers.ColumnStatsProfileCompiler),
+        ]
+        for class_name, cls in compiler_classes:
+            serialized = {
+                "class": class_name,
+                "data": {"name": None, "_profiles": {}},
+            }
+            result = load_compiler(serialized)
+            self.assertIsInstance(result, cls)
+            self.assertIsNone(result.name)
+
+
 if __name__ == "__main__":
     unittest.main()
