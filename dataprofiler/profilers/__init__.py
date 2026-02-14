@@ -7,6 +7,7 @@ from .column_profile_compilers import (
     ColumnDataLabelerCompiler,
     ColumnPrimitiveTypeProfileCompiler,
     ColumnStatsProfileCompiler,
+    UnstructuredCompiler,
 )
 from .data_labeler_column_profile import DataLabelerColumn
 from .datetime_column_profile import DateTimeColumn
@@ -45,6 +46,7 @@ from .profiler_options import (
 )
 from .text_column_profile import TextColumn
 from .unstructured_labeler_profile import UnstructuredLabelerProfile
+from .unstructured_text_profile import TextProfiler
 
 # set here to avoid circular imports
 json_decoder._profiles = {
@@ -55,6 +57,8 @@ json_decoder._profiles = {
     OrderColumn.__name__: OrderColumn,
     DataLabelerColumn.__name__: DataLabelerColumn,
     TextColumn.__name__: TextColumn,
+    TextProfiler.__name__: TextProfiler,
+    UnstructuredLabelerProfile.__name__: UnstructuredLabelerProfile,
 }
 
 
@@ -62,6 +66,7 @@ json_decoder._compilers = {
     ColumnDataLabelerCompiler.__name__: ColumnDataLabelerCompiler,
     ColumnPrimitiveTypeProfileCompiler.__name__: ColumnPrimitiveTypeProfileCompiler,
     ColumnStatsProfileCompiler.__name__: ColumnStatsProfileCompiler,
+    UnstructuredCompiler.__name__: UnstructuredCompiler,
 }
 
 json_decoder._options = {
@@ -92,6 +97,7 @@ json_decoder._options = {
 
 json_decoder._profilers = {
     StructuredProfiler.__name__: StructuredProfiler,
+    UnstructuredProfiler.__name__: UnstructuredProfiler,
 }
 
 json_decoder._structured_col_profiler = {

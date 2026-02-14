@@ -474,6 +474,39 @@ class TextProfiler:
         }
         BaseColumnProfiler._filter_properties_w_options(self.__calculations, options)
 
+    @classmethod
+    def load_from_dict(cls, data, config=None):
+        """
+        Parse attribute from json dictionary into self.
+
+        :param data: dictionary with attributes and values.
+        :type data: dict[string, Any]
+        :param config: config for loading column profiler params from dictionary
+        :type config: Dict | None
+
+        :return: Profiler with attributes populated.
+        :rtype: TextProfiler
+        """
+        profile = cls(data.get("name"))
+        for attr, value in data.items():
+            if "times" == attr:
+                value = defaultdict(float, value)
+            if "vocab_count" == attr:
+                value = Counter(value)
+            if "word_count" == attr:
+                value = Counter(value)
+            if "_stop_words" == attr:
+                value = set(value)
+            if "__calculations" in attr:
+                for metric, function in value.items():
+                    if not hasattr(profile, function):
+                        raise AttributeError(
+                            f"Object {type(profile)} has no attribute {function}."
+                        )
+                    value[metric] = getattr(profile, function).__func__
+            setattr(profile, attr, value)
+        return profile
+
     @staticmethod
     def _merge_vocab(vocab_count1: Counter, vocab_count2: Counter) -> Counter:
         """
