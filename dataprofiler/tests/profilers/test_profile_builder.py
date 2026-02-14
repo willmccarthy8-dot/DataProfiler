@@ -5255,5 +5255,440 @@ class TestProfilerFactoryClass(unittest.TestCase):
         self.assertEqual(10, profile._min_true_samples)
 
 
+class TestMultiprocessingSupport(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        test_utils.set_seed(seed=0)
+        cls.data = pd.DataFrame(
+            {
+                "ints": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                "floats": [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5],
+                "strs": [
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j"
+                ],
+            }
+        )
+
+    def setUp(self):
+        test_utils.set_seed(seed=0)
+
+    def _get_mp_options(self, mp_enabled, chi2_enabled=True):
+        profile_options = ProfilerOptions()
+        opts = {
+            "data_labeler.is_enabled": False,
+            "multiprocess.is_enabled": mp_enabled,
+        }
+        if not chi2_enabled:
+            opts["chi2_homogeneity.is_enabled"] = False
+        profile_options.set(opts)
+        return profile_options
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.profiler_utils.auto_multiprocess_toggle",
+        return_value=True,
+    )
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+    )
+    def test_multiprocess_option_triggers_auto_toggle(
+        self, mock_generate_pool, mock_auto_toggle
+    ):
+        mock_generate_pool.return_value = (None, None)
+        options = self._get_mp_options(True)
+        with test_utils.mock_timeit():
+            dp.StructuredProfiler(self.data, options=options)
+        mock_auto_toggle.assert_called()
+
+    def test_multiprocess_disabled_does_not_trigger_toggle(self):
+        options = self._get_mp_options(False)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle"
+        ) as mock_auto_toggle:
+            with test_utils.mock_timeit():
+                dp.StructuredProfiler(self.data, options=options)
+            mock_auto_toggle.assert_not_called()
+
+    def test_parallel_vs_sequential_report_equivalence(self):
+        from multiprocessing.pool import Pool
+
+        test_utils.set_seed(seed=42)
+        options_seq = self._get_mp_options(False)
+        with test_utils.mock_timeit():
+            profiler_seq = dp.StructuredProfiler(
+                self.data, options=options_seq
+            )
+        report_seq = profiler_seq.report(
+            report_options={"remove_disabled_flag": True}
+        )
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def fake_apply_async(func, args):
+            result = func(*args)
+            async_result = mock.MagicMock()
+            async_result.get.return_value = result
+            return async_result
+
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        test_utils.set_seed(seed=42)
+        options_mp = self._get_mp_options(True)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit():
+            profiler_mp = dp.StructuredProfiler(
+                self.data, options=options_mp
+            )
+        report_mp = profiler_mp.report(
+            report_options={"remove_disabled_flag": True}
+        )
+
+        self.assertEqual(
+            report_seq["global_stats"]["samples_used"],
+            report_mp["global_stats"]["samples_used"],
+        )
+        self.assertEqual(
+            report_seq["global_stats"]["column_count"],
+            report_mp["global_stats"]["column_count"],
+        )
+        self.assertEqual(
+            report_seq["global_stats"]["row_count"],
+            report_mp["global_stats"]["row_count"],
+        )
+        self.assertEqual(
+            report_seq["global_stats"]["row_has_null_ratio"],
+            report_mp["global_stats"]["row_has_null_ratio"],
+        )
+
+        for i, (stat_seq, stat_mp) in enumerate(
+            zip(report_seq["data_stats"], report_mp["data_stats"])
+        ):
+            self.assertEqual(
+                stat_seq["column_name"],
+                stat_mp["column_name"],
+                f"Column name mismatch at index {i}",
+            )
+            self.assertEqual(
+                stat_seq["data_type"],
+                stat_mp["data_type"],
+                f"Data type mismatch for column {stat_seq['column_name']}",
+            )
+            self.assertEqual(
+                stat_seq["statistics"]["sample_size"],
+                stat_mp["statistics"]["sample_size"],
+                f"Sample size mismatch for column {stat_seq['column_name']}",
+            )
+            self.assertEqual(
+                stat_seq["statistics"]["null_count"],
+                stat_mp["statistics"]["null_count"],
+                f"Null count mismatch for column {stat_seq['column_name']}",
+            )
+
+    def test_multiprocess_pool_used_for_clean_data(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def fake_apply_async(func, args):
+            result = func(*args)
+            async_result = mock.MagicMock()
+            async_result.get.return_value = result
+            return async_result
+
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        options = self._get_mp_options(True)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit():
+            dp.StructuredProfiler(self.data, options=options)
+
+        self.assertGreaterEqual(
+            mock_pool.apply_async.call_count,
+            len(self.data.columns),
+        )
+        mock_pool.close.assert_called()
+        mock_pool.join.assert_called()
+
+    def test_multiprocess_pool_passed_to_column_profilers(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def fake_apply_async(func, args):
+            result = func(*args)
+            async_result = mock.MagicMock()
+            async_result.get.return_value = result
+            return async_result
+
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        options = self._get_mp_options(True, chi2_enabled=False)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), mock.patch.object(
+            StructuredColProfiler,
+            "update_column_profilers",
+        ) as mock_update_col, test_utils.mock_timeit():
+            dp.StructuredProfiler(self.data, options=options)
+
+        pool_was_passed = False
+        for call_args in mock_update_col.call_args_list:
+            if len(call_args[0]) > 1 and call_args[0][1] is not None:
+                pool_was_passed = True
+                break
+            if call_args[1].get("pool") is not None:
+                pool_was_passed = True
+                break
+        self.assertTrue(pool_was_passed)
+
+    def test_multiprocess_error_fallback_to_single_process(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def failing_apply_async(func, args):
+            raise RuntimeError("Simulated multiprocessing error")
+
+        mock_pool.apply_async.side_effect = failing_apply_async
+
+        options = self._get_mp_options(True, chi2_enabled=False)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit(), mock.patch(
+            "dataprofiler.profilers.profile_builder.logger.info"
+        ):
+            profiler = dp.StructuredProfiler(self.data, options=options)
+
+        report = profiler.report(report_options={"remove_disabled_flag": True})
+        self.assertEqual(
+            report["global_stats"]["column_count"],
+            len(self.data.columns),
+        )
+        for stat in report["data_stats"]:
+            self.assertIsNotNone(stat["data_type"])
+
+    def test_multiprocess_get_error_fallback(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def apply_async_with_get_error(func, args):
+            async_result = mock.MagicMock()
+            async_result.get.side_effect = RuntimeError(
+                "Simulated get error"
+            )
+            return async_result
+
+        mock_pool.apply_async.side_effect = apply_async_with_get_error
+
+        options = self._get_mp_options(True, chi2_enabled=False)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit(), mock.patch(
+            "dataprofiler.profilers.profile_builder.logger.info"
+        ):
+            profiler = dp.StructuredProfiler(self.data, options=options)
+
+        report = profiler.report(report_options={"remove_disabled_flag": True})
+        self.assertEqual(
+            report["global_stats"]["column_count"],
+            len(self.data.columns),
+        )
+
+    @mock.patch(
+        "dataprofiler.profilers.profile_builder.profiler_utils.auto_multiprocess_toggle",
+        return_value=False,
+    )
+    def test_auto_toggle_false_no_pool_created(self, mock_auto_toggle):
+        options = self._get_mp_options(True)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+        ) as mock_gen_pool, test_utils.mock_timeit():
+            dp.StructuredProfiler(self.data, options=options)
+        mock_auto_toggle.assert_called()
+        mock_gen_pool.assert_not_called()
+
+    def test_update_profile_with_multiprocess(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def fake_apply_async(func, args):
+            result = func(*args)
+            async_result = mock.MagicMock()
+            async_result.get.return_value = result
+            return async_result
+
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        options = self._get_mp_options(True)
+
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit():
+            profiler = dp.StructuredProfiler(self.data[:5], options=options)
+
+        initial_total = profiler.total_samples
+
+        mock_pool.reset_mock()
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit():
+            profiler.update_profile(self.data[5:])
+
+        self.assertEqual(profiler.total_samples, len(self.data))
+        self.assertGreater(profiler.total_samples, initial_total)
+        mock_pool.apply_async.assert_called()
+
+    def test_generate_pool_called_with_data_size_estimate(self):
+        options = self._get_mp_options(True)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(None, None),
+        ) as mock_gen_pool, test_utils.mock_timeit():
+            dp.StructuredProfiler(self.data, options=options)
+
+        self.assertTrue(mock_gen_pool.call_count >= 1)
+        first_call_kwargs = mock_gen_pool.call_args_list[0]
+        self.assertIn("data_size", first_call_kwargs[1] if first_call_kwargs[1] else {})
+
+    def test_col_profiler_accepts_pool_parameter(self):
+        from multiprocessing.pool import Pool
+
+        mock_pool = mock.MagicMock(spec=Pool)
+        data = pd.Series([1, 2, 3, 4, 5], name="test_col")
+        with mock.patch(
+            "dataprofiler.profilers.column_profile_compilers."
+            "BaseCompiler.update_profile"
+        ), mock.patch(
+            "dataprofiler.profilers.data_labeler_column_profile.DataLabeler"
+        ):
+            col_profiler = StructuredColProfiler(data, pool=mock_pool)
+        self.assertIsNotNone(col_profiler)
+        self.assertEqual(col_profiler.name, "test_col")
+
+    def test_multiprocess_with_null_data(self):
+        from multiprocessing.pool import Pool
+
+        data_with_nulls = pd.DataFrame(
+            {
+                "a": [1, None, 3, None, 5],
+                "b": [None, 2, None, 4, None],
+                "c": ["x", None, "z", None, "w"],
+            }
+        )
+
+        mock_pool = mock.MagicMock(spec=Pool)
+
+        def fake_apply_async(func, args):
+            result = func(*args)
+            async_result = mock.MagicMock()
+            async_result.get.return_value = result
+            return async_result
+
+        mock_pool.apply_async.side_effect = fake_apply_async
+
+        test_utils.set_seed(seed=42)
+        options_seq = self._get_mp_options(False)
+        with test_utils.mock_timeit():
+            profiler_seq = dp.StructuredProfiler(
+                data_with_nulls, options=options_seq
+            )
+
+        test_utils.set_seed(seed=42)
+        options_mp = self._get_mp_options(True)
+        with mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils."
+            "auto_multiprocess_toggle",
+            return_value=True,
+        ), mock.patch(
+            "dataprofiler.profilers.profile_builder.profiler_utils.generate_pool",
+            return_value=(mock_pool, 4),
+        ), test_utils.mock_timeit():
+            profiler_mp = dp.StructuredProfiler(
+                data_with_nulls, options=options_mp
+            )
+
+        report_seq = profiler_seq.report(
+            report_options={"remove_disabled_flag": True}
+        )
+        report_mp = profiler_mp.report(
+            report_options={"remove_disabled_flag": True}
+        )
+
+        self.assertEqual(
+            report_seq["global_stats"]["row_count"],
+            report_mp["global_stats"]["row_count"],
+        )
+        for stat_seq, stat_mp in zip(
+            report_seq["data_stats"], report_mp["data_stats"]
+        ):
+            self.assertEqual(
+                stat_seq["statistics"]["null_count"],
+                stat_mp["statistics"]["null_count"],
+            )
+            self.assertEqual(
+                stat_seq["statistics"]["sample_size"],
+                stat_mp["statistics"]["sample_size"],
+            )
+
+    def test_multiprocess_option_is_enabled_default(self):
+        options = StructuredOptions()
+        self.assertTrue(options.multiprocess.is_enabled)
+
+    def test_multiprocess_option_set_and_validate(self):
+        profile_options = ProfilerOptions()
+        profile_options.set({"multiprocess.is_enabled": True})
+        self.assertTrue(
+            profile_options.structured_options.multiprocess.is_enabled
+        )
+        errors = profile_options.validate()
+        self.assertIsNone(errors)
+
+
 if __name__ == "__main__":
     unittest.main()
